@@ -7,9 +7,9 @@ on:
 
 permissions:
   contents: read
-  # Required for npm provenance — lets npm attest that this tarball was
-  # built by this workflow from this commit, and shows a verified badge
-  # on the package page. Public repos only.
+  # Required for OIDC trusted publishing. This is what proves to npm that
+  # the publish really came from this workflow, in this repo — it replaces
+  # a long-lived NPM_TOKEN entirely. Nothing secret is stored anywhere.
   id-token: write
 
 jobs:
@@ -20,15 +20,25 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          # Trusted publishing needs npm >= 11.5.1 / Node >= 22.14.0.
+          # Node 24 ships npm 11.x; the check below fails loudly rather
+          # than falling back to an auth mode we deliberately don't use.
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
+
+      - name: verify npm supports trusted publishing
+        run: |
+          NPM_V="$(npm --version)"
+          echo "npm $NPM_V / node $(node --version)"
+          node -e "process.exit(require('semver/functions/gte')('$NPM_V','11.5.1')?0:1)" 2>/dev/null \
+            || npx --yes semver -r '>=11.5.1' "$NPM_V" >/dev/null \
+            || { echo "::error::npm $NPM_V is too old for OIDC trusted publishing (need >= 11.5.1)"; exit 1; }
 
       - run: npm ci
 
-      # A published version is immutable — npm will not let you re-publish
-      # over it. Catch a tag/package.json mismatch BEFORE it becomes a
-      # permanent wrong version on the registry.
+      # A published version is immutable — npm will not let you republish
+      # over it, only deprecate it. Catch a tag/package.json mismatch
+      # BEFORE it becomes a permanently wrong version on the registry.
       - name: verify tag matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -44,6 +54,7 @@ jobs:
       - run: npm run test
       - run: npm run build
 
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # No NODE_AUTH_TOKEN. Authentication is the OIDC token minted by the
+      # id-token permission above. Provenance is generated automatically
+      # for trusted publishes from a public repo.
+      - run: npm publish --access public
