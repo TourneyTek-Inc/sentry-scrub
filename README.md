@@ -1,7 +1,7 @@
-# @pokerhawk/sentry-scrub
+# @tourneytek/sentry-scrub
 
 [![CI](https://github.com/TourneyTek-Inc/sentry-scrub/actions/workflows/ci.yml/badge.svg)](https://github.com/TourneyTek-Inc/sentry-scrub/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@pokerhawk/sentry-scrub.svg)](https://www.npmjs.com/package/@pokerhawk/sentry-scrub)
+[![npm](https://img.shields.io/npm/v/@tourneytek/sentry-scrub.svg)](https://www.npmjs.com/package/@tourneytek/sentry-scrub)
 [![types](https://img.shields.io/badge/types-included-3178C6.svg)](https://www.typescriptlang.org/)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
@@ -10,12 +10,12 @@ Strip PII and secrets out of Sentry events **before they leave the process**.
 Zero dependencies. No Sentry SDK dependency — works with `@sentry/nextjs`, `@sentry/react-native`, `@sentry/electron`, `@sentry/node`, or anything else with a `beforeSend` hook.
 
 ```bash
-npm install @pokerhawk/sentry-scrub
+npm install @tourneytek/sentry-scrub
 ```
 
 ```ts
 import * as Sentry from '@sentry/nextjs';
-import { scrubSentryEvent } from '@pokerhawk/sentry-scrub';
+import { scrubSentryEvent } from '@tourneytek/sentry-scrub';
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -72,7 +72,7 @@ Webhook routes verify signatures against the **raw** request body, so those bodi
 The defaults are deliberately generic. Anything specific to your domain — a join code, a player id, an internal ticket format — is yours to add:
 
 ```ts
-import { createScrubber, defaultRules, keyValueRule } from '@pokerhawk/sentry-scrub';
+import { createScrubber, defaultRules, keyValueRule } from '@tourneytek/sentry-scrub';
 
 const scrubber = createScrubber({
   // Key patterns, matched against STRUCTURED object keys.

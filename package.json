@@ -1,5 +1,5 @@
 {
-  "name": "@pokerhawk/sentry-scrub",
+  "name": "@tourneytek/sentry-scrub",
   "version": "0.1.0",
   "description": "Redact PII and secrets from Sentry events before they leave the process. Single-pass, never-throws, zero dependencies.",
   "keywords": ["sentry", "pii", "redaction", "scrub", "beforeSend", "gdpr", "privacy", "secrets", "observability"],
