@@ -1,11 +1,24 @@
 {
   "name": "@tourneytek/sentry-scrub",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Redact PII and secrets from Sentry events before they leave the process. Single-pass, never-throws, zero dependencies.",
-  "keywords": ["sentry", "pii", "redaction", "scrub", "beforeSend", "gdpr", "privacy", "secrets", "observability"],
+  "keywords": [
+    "sentry",
+    "pii",
+    "redaction",
+    "scrub",
+    "beforeSend",
+    "gdpr",
+    "privacy",
+    "secrets",
+    "observability"
+  ],
   "homepage": "https://github.com/TourneyTek-Inc/sentry-scrub#readme",
   "bugs": "https://github.com/TourneyTek-Inc/sentry-scrub/issues",
-  "repository": { "type": "git", "url": "git+https://github.com/TourneyTek-Inc/sentry-scrub.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TourneyTek-Inc/sentry-scrub.git"
+  },
   "license": "MIT",
   "author": "Tyler Henson <tyler.henson@tourneytek.com> (https://www.pokerhawk.io)",
   "type": "module",
@@ -14,10 +27,18 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
   },
-  "files": ["dist"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -25,6 +46,12 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
-  "devDependencies": { "tsup": "^8.3.5", "typescript": "^5.7.2", "vitest": "^2.1.8" },
-  "publishConfig": { "access": "public" }
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
