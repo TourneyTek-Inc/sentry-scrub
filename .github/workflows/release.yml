@@ -24,7 +24,17 @@ jobs:
           # Node 24 ships npm 11.x; the check below fails loudly rather
           # than falling back to an auth mode we deliberately don't use.
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          # Deliberately NO registry-url. Setting it makes setup-node write an
+          # .npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`,
+          # and it defaults NODE_AUTH_TOKEN to the literal placeholder
+          # XXXXX-XXXXX-XXXXX-XXXXX. Current npm treats any configured
+          # _authToken as "already authenticated" and SKIPS the OIDC exchange
+          # entirely, then publishes with the placeholder — which the registry
+          # rejects as `E404 ... PUT` (npm returns 404, not 401, for writes you
+          # aren't allowed to make). That 404 reads like a missing package or a
+          # broken trusted-publisher config; it is neither. Older npm tried
+          # OIDC first, which is why this workflow used to publish fine.
+          # registry.npmjs.org is the default registry anyway.
 
       - name: verify npm supports trusted publishing
         run: |
