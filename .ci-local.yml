@@ -1,0 +1,19 @@
+# Local CI policy. Committed on purpose: it belongs to the team and means
+# the same thing on anyone's hardware.
+#
+# How much of a particular machine may be lent to CI is NOT in here: that
+# describes one computer rather than this project, and one machine runs one
+# VM however many repositories share it. Each machine keeps its own answer
+# locally, outside the repository.
+
+repo: TourneyTek-Inc/sentry-scrub
+runner:
+    image: standard
+lanes: []
+route:
+    forks: hosted
+fallback:
+    auto_drain_on:
+        - battery
+        - low_disk
+    watchdog_interval: 1h0m0s
