@@ -1,0 +1,282 @@
+# Generated. Safe to edit; cidekick doctor reports it if this drifts from what the
+# tool expects.
+#
+# WHAT THIS IS FOR
+# ----------------
+# Jobs are routed by the CI_RUNS_ON repository variable, which the local agent
+# maintains. When the agent is healthy it publishes the self-hosted labels; when
+# it is not, it publishes ["ubuntu-latest"] and work carries on costing money
+# instead of silently stopping.
+#
+# That covers everything except one case: an agent that dies without getting a
+# word out — a machine losing power, a lid closing, a kernel panic. The variable
+# still names a runner that is not there, and jobs queue. GitHub does not fall
+# back from self-hosted labels to hosted ones, timeout-minutes does not fire on a
+# queued job because that clock starts on execution, and the queue ceiling is
+# twenty-four hours. Nothing tells anyone.
+#
+# So the agent also writes a heartbeat, and this file watches it from somewhere
+# that cannot share its fate.
+#
+# WHAT IT CANNOT DO, AND WHY
+# --------------------------
+# It cannot flip the routing variable back by itself unless you give it a token.
+# Measured, not assumed: a workflow's own GITHUB_TOKEN gets
+# "Resource not accessible by integration" (403) on every repository-variable
+# call, including reads. The ${{ vars.* }} expression context still works —
+# that is evaluated by Actions, not through the API — which is why this file can
+# READ the heartbeat for free but not WRITE the routing.
+#
+# What it does instead is more useful than it sounds: it turns a silent queue
+# into a visible failure. A cancelled job is a red X somebody notices. A queued
+# job is nothing at all, for a day.
+#
+# COST
+# ----
+# Every run bills a whole minute even though the work takes seconds, so this
+# schedule costs about 180 billed minutes a month. Widen the cron to spend less;
+# the trade is how long a dead machine can stall work before anyone is told.
+
+name: Runner watchdog
+
+on:
+  schedule:
+    # Offset off the hour: GitHub delays crons that pile up at :00, and a
+    # watchdog that runs late is a watchdog that reports late.
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: runner-watchdog
+  cancel-in-progress: false
+
+permissions:
+  actions: write   # list runs and jobs, and cancel the stuck ones
+  issues: write    # open, update and close the one alert
+
+jobs:
+  watch:
+    # DO NOT change this to self-hosted. The whole point is that it survives the
+    # machine it is watching being switched off.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          HEARTBEAT: ${{ vars.CI_RUNNER_HEARTBEAT }}
+          ROUTING: ${{ vars.CI_RUNS_ON }}
+          STALE_MINUTES: '10'
+          CANCEL_STUCK: 'true'
+        with:
+          script: |
+            const MARKER = '<!-- ci-local-watchdog -->';
+            const TITLE = 'CI: the local runner is not picking up jobs';
+            const staleMinutes = Number(process.env.STALE_MINUTES || '10');
+            const cancelStuck = process.env.CANCEL_STUCK === 'true';
+            const heartbeat = (process.env.HEARTBEAT || '').trim();
+            const routing = (process.env.ROUTING || '').trim();
+            const now = Date.now();
+            const minsSince = (iso) => (now - new Date(iso).getTime()) / 60000;
+
+            // --- 1. Is the agent alive? -------------------------------------------------
+            // An absent heartbeat with hosted routing is not a fault: it is a repo where
+            // nobody has set this up, or one that was deliberately uninstalled. Both are
+            // working states and neither deserves an issue.
+            //
+            // The heartbeat is an object of machine id -> {at, healthy}, because more than
+            // one computer can serve a repository. It used to be a single timestamp written
+            // by whichever agent was alive, and with two machines that was actively
+            // dangerous: the live one kept the beat fresh while the machine holding the
+            // runners was dead, so this script saw a healthy system, filed nothing and
+            // cancelled nothing, and jobs queued on labels nothing was answering. The
+            // watchdog reported everything was fine precisely when it was not.
+            //
+            // A bare timestamp is still accepted, because repositories set up before
+            // machines had identities still have one. They migrate on the next beat.
+            const routingIsLocal = routing.includes('self-hosted');
+            let beats = [];
+            if (heartbeat) {
+              try {
+                const parsed = JSON.parse(heartbeat);
+                if (parsed && typeof parsed === 'object') {
+                  beats = Object.keys(parsed).map((id) => ({
+                    id,
+                    age: minsSince(parsed[id].at),
+                    healthy: parsed[id].healthy !== false,
+                  }));
+                }
+              } catch (e) {
+                beats = [{ id: '-', age: minsSince(heartbeat), healthy: true }];
+              }
+            }
+            // Fresh AND willing. A machine that is up but has routed itself to hosted is
+            // not going to answer these labels, so counting it as present is what would
+            // leave the jobs sitting there.
+            const live = beats.filter((b) => Number.isFinite(b.age) && b.age <= staleMinutes && b.healthy);
+            const agentGone = routingIsLocal && live.length === 0;
+            // The freshest beat, for the sentences below.
+            //
+            // Left undefined when the heartbeat became per-machine: this used to be one
+            // timestamp and became an array, and three places that report the age in words
+            // kept referring to the old name. Every one of them is on the path taken when
+            // the machine is GONE, so the script ran perfectly for as long as nothing was
+            // wrong and threw ReferenceError the moment something was — which is to say the
+            // alarm was broken in exactly the state it exists to report, and stayed broken
+            // because a healthy machine never reaches these lines.
+            //
+            // It cost a nineteen hour outage: the watchdog fired four times, crashed four
+            // times, filed nothing, and jobs sat queued for a day.
+            //
+            // Null rather than zero when nothing has ever beaten, because "no heartbeat at
+            // all" and "a heartbeat from this instant" are opposite facts and the sentences
+            // below distinguish them.
+            const ages = beats.map((b) => b.age).filter(Number.isFinite);
+            const agentAge = ages.length ? Math.min(...ages) : null;
+            const staleMachines = beats.filter((b) => !Number.isFinite(b.age) || b.age > staleMinutes).map((b) => b.id);
+
+            // --- 2. What is stuck? ------------------------------------------------------
+            // Only self-hosted jobs can be stuck on OUR runner. A queued hosted job is
+            // GitHub's capacity or a spending stop, which is a different problem with a
+            // different fix and must not be swept into this alert.
+            const runs = [];
+            for (const status of ['queued', 'in_progress']) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner, repo: context.repo.repo, status, per_page: 30,
+              });
+              runs.push(...data.workflow_runs);
+            }
+
+            const stuck = [];
+            for (const run of runs) {
+              // Anything past the queue ceiling has already failed on its own.
+              if (minsSince(run.created_at) > 60 * 24) continue;
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 50,
+              });
+              for (const job of data.jobs) {
+                if (job.status !== 'queued') continue;
+                const labels = (job.labels || []).map((l) => String(l).toLowerCase());
+                if (!labels.includes('self-hosted')) continue;
+                stuck.push({
+                  runId: run.id, job: job.name, workflow: run.name,
+                  branch: run.head_branch, waited: Math.round(minsSince(run.created_at)),
+                  url: run.html_url,
+                });
+              }
+            }
+
+            // --- 3. Decide -------------------------------------------------------------
+            // Saturation and death produce identical queues from outside, and this file
+            // cannot see the runner. The heartbeat is what separates them: if the agent is
+            // answering, jobs are waiting because the lanes are busy, and that is the
+            // system working. Reporting it as an outage is the mistake this design exists
+            // to avoid, so it stays quiet.
+            const healthy = !agentGone;
+            if (healthy) {
+              core.info(stuck.length
+                ? stuck.length + ' job(s) waiting, but the agent is alive ' +
+                  '(heartbeat ' + Math.round(agentAge) + 'm old) — the lanes are busy, not gone.'
+                : 'Healthy.');
+            }
+
+            // --- 4. Act ----------------------------------------------------------------
+            let cancelled = [];
+            if (agentGone && cancelStuck && stuck.length) {
+              // Cancelling looks aggressive and is the kindest thing available. Without a
+              // token this file cannot repoint routing, so a re-run would resolve the same
+              // dead labels and queue again. What it CAN do is convert silence into a red
+              // X somebody notices, hours before the 24-hour ceiling.
+              const ids = [...new Set(stuck.map((s) => s.runId))];
+              for (const id of ids) {
+                try {
+                  await github.rest.actions.cancelWorkflowRun({
+                    owner: context.repo.owner, repo: context.repo.repo, run_id: id,
+                  });
+                  cancelled.push(id);
+                } catch (e) {
+                  core.warning('could not cancel run ' + id + ': ' + e.message);
+                }
+              }
+            }
+
+            // --- 5. Report -------------------------------------------------------------
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100,
+            });
+            const existing = open.find((i) => (i.body || '').includes(MARKER));
+
+            if (healthy) {
+              if (existing) {
+                // Close on recovery rather than waiting for someone to notice. An alert
+                // that outlives its incident is how people learn to ignore alerts.
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
+                  body: MARKER + '\n\nRecovered. The agent is answering again' +
+                    (agentAge !== null ? ' (heartbeat ' + Math.round(agentAge) + ' minutes old)' : '') +
+                    ', and routing is ' + '`' + (routing || 'unset — hosted') + '`' + '. Closing.',
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number, state: 'closed',
+                });
+                core.info('Recovered; closed #' + existing.number + '.');
+              }
+              return;
+            }
+
+            const rows = stuck.map((s) =>
+              '| ' + s.workflow + ' / ' + s.job + ' | `' + s.branch + '` | ' + s.waited + ' min | [run](' + s.url + ') |'
+            ).join('\n');
+
+            const body = [
+              MARKER,
+              '**The local agent has stopped answering.**',
+              '',
+              agentAge === null
+                ? 'No heartbeat has ever been published, but routing still names the self-hosted labels.'
+                : 'Last heartbeat was **' + Math.round(agentAge) + ' minutes ago**; anything over ' + staleMinutes + ' counts as gone.',
+              '',
+              'Routing is currently `' + (routing || 'unset') + '`, so newly dispatched jobs are being sent to a machine that is not answering.',
+              '',
+              stuck.length ? '### Jobs affected\n\n| Job | Branch | Waited | |\n| --- | --- | ---: | --- |\n' + rows : '_Nothing is queued yet — this was caught before it cost anyone time._',
+              '',
+              cancelled.length
+                ? '**' + cancelled.length + ' run(s) were cancelled** so they fail visibly now rather than sitting in the queue until GitHub gives up on them in 24 hours. Re-run them once routing is fixed.'
+                : '',
+              '',
+              '### Fixing it',
+              '',
+              'From any machine with the GitHub CLI, send work back to hosted runners:',
+              '',
+              '```bash',
+              'gh variable set CI_RUNS_ON --repo ' + context.repo.owner + '/' + context.repo.repo + ' --body \'["ubuntu-latest"]\'',
+              '```',
+              '',
+              'That costs Actions minutes and it works. Then, on the machine itself:',
+              '',
+              '```bash',
+              'cidekick status   # what it thinks is wrong',
+              'cidekick up       # bring the VM and lanes back',
+              '```',
+              '',
+              'The agent republishes the local labels itself once it is healthy, so nothing needs undoing.',
+              '',
+              '### This is not the other thing',
+              '',
+              'A **busy** runner also produces a queue, and this alert does not fire for it — the heartbeat tells them apart. It is also not the spending stop, whose signature is *completed/failure* in two seconds with `steps: 0`, on every branch at once.',
+              '',
+              '_Filed by the generated runner watchdog. It closes itself when the agent comes back._',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+              core.warning('Still down; commented on #' + existing.number + '.');
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo, title: TITLE, body,
+              });
+              core.warning('Filed #' + created.number + '.');
+            }
