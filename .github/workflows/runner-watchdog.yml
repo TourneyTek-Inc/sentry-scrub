@@ -5,8 +5,9 @@
 # ----------------
 # Jobs are routed by the CI_RUNS_ON repository variable, which the local agent
 # maintains. When the agent is healthy it publishes the self-hosted labels; when
-# it is not, it publishes ["ubuntu-latest"] and work carries on costing money
-# instead of silently stopping.
+# it is not, and no other machine serving this repository is answering either,
+# it publishes ["ubuntu-latest"] and work carries on costing money instead of
+# silently stopping.
 #
 # That covers everything except one case: an agent that dies without getting a
 # word out — a machine losing power, a lid closing, a kernel panic. The variable
@@ -109,10 +110,29 @@ jobs:
                 beats = [{ id: '-', age: minsSince(heartbeat), healthy: true }];
               }
             }
+            // Routing names the labels every machine serving this repository shares, so
+            // ANY live machine answers it — which is what makes "somebody is alive" the
+            // right question below.
+            //
+            // Except for routing still pinned to ONE machine, by its label
+            // ci-local-<repo>-m-<id>: what agents published before they shared routing, and
+            // what one not yet upgraded still does. Only that machine can answer then, and
+            // counting a different live machine is how this script reported everything
+            // fine while the jobs waited for one that was dead.
+            const pinPrefix = ('ci-local-' + context.repo.repo + '-m-').toLowerCase();
+            let routed = [];
+            try {
+              const parsed = JSON.parse(routing || '[]');
+              if (Array.isArray(parsed)) routed = parsed.map((l) => String(l).toLowerCase());
+            } catch (e) {
+              routed = [];
+            }
+            const pinned = routed.filter((l) => l.startsWith(pinPrefix)).map((l) => l.slice(pinPrefix.length));
+            const answering = beats.filter((b) => pinned.length === 0 || pinned.includes(String(b.id).toLowerCase()));
             // Fresh AND willing. A machine that is up but has routed itself to hosted is
             // not going to answer these labels, so counting it as present is what would
             // leave the jobs sitting there.
-            const live = beats.filter((b) => Number.isFinite(b.age) && b.age <= staleMinutes && b.healthy);
+            const live = answering.filter((b) => Number.isFinite(b.age) && b.age <= staleMinutes && b.healthy);
             const agentGone = routingIsLocal && live.length === 0;
             // The freshest beat, for the sentences below.
             //
@@ -130,7 +150,10 @@ jobs:
             // Null rather than zero when nothing has ever beaten, because "no heartbeat at
             // all" and "a heartbeat from this instant" are opposite facts and the sentences
             // below distinguish them.
-            const ages = beats.map((b) => b.age).filter(Number.isFinite);
+            //
+            // From the machines that could answer, so a pinned route to a dead machine is
+            // not described with a live neighbour's one-minute-old beat.
+            const ages = answering.map((b) => b.age).filter(Number.isFinite);
             const agentAge = ages.length ? Math.min(...ages) : null;
             const staleMachines = beats.filter((b) => !Number.isFinite(b.age) || b.age > staleMinutes).map((b) => b.id);
 
