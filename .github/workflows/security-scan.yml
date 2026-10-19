@@ -1,0 +1,76 @@
+# Security scan — gitleaks, as poker-hawk and dev-space run it.
+#
+# Added by the nightly provision pass from `_agents/templates/baseline/` in recondemon/dev-space-monorepo
+# (prj:provision-an-added-repo), only because this repository had no security-scan.yml. The pass never
+# overwrites it, so edit it freely.
+#
+# gitleaks (the MIT binary, pinned) on every ready PR over the commits it adds, and a full-history sweep
+# every Monday. Dependency advisories are Dependabot's. Pin a known false positive by fingerprint in
+# `.gitleaksignore` after reading it, never by widening the scan's exclusions.
+
+name: Security scan
+
+on:
+  schedule:
+    - cron: '0 13 * * 1' # Mondays 13:00 UTC
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubuntu-latest"]') }}
+    # A draft PR is scanned when it is marked ready.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    timeout-minutes: 15
+    steps:
+      # Two checkouts, one per event, rather than one with an `a && b || c` expression that falls through
+      # when b is falsy. A PR needs its commits and refs; the sweep reads every blob in history.
+      - name: Checkout (PR — commits and refs, blobs on demand)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Checkout (sweep — full history)
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The arch is read off the machine: a self-hosted runner may be arm64, and an x64 binary there fails
+      # with a bare "cannot execute". Into RUNNER_TEMP, so no root is needed.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          case "$(uname -m)" in
+            x86_64)        ARCH=x64 ;;
+            aarch64|arm64) ARCH=arm64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_${ARCH}.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/gitleaks" version
+
+      - name: Scan the PR's commits (base..HEAD)
+        if: github.event_name == 'pull_request'
+        run: |
+          gitleaks detect --source . --redact --verbose --exit-code 1 \
+            --log-opts "origin/${{ github.base_ref }}..HEAD"
+
+      - name: Scan the full history
+        if: github.event_name != 'pull_request'
+        run: gitleaks detect --source . --redact --verbose --exit-code 1
